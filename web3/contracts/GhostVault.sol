@@ -15,10 +15,7 @@ import {ERC20} from "@rari-capital/solmate/src/tokens/ERC20.sol";
  * @dev GhostVault 
  */
 contract GhostVault is ERC4626 {
-
-    address private constant POOL_ADDRESS_PROVIDER = 0xeb7A892BB04A8f836bDEeBbf60897A7Af1Bf5d7F;
-    address constant USDC_ADDRESS = 0xe9DcE89B076BA6107Bb64EF30678efec11939234;
-
+    address constant USDC_ADDRESS;
     address private AAVE_LENDING_POOL_ADDRESS; 
     address private PRICE_ORACLE;
 
@@ -26,7 +23,12 @@ contract GhostVault is ERC4626 {
     IPool private lendingPool;
     IPriceOracle private priceOracle;
 
-    uint256 interestRate;
+    struct Asset{
+        address owner;
+        uint256 amount;
+    }
+
+    mapping (address => Asset) public assets;
 
     /*//////////////////////////////////////////////////////////////
                                IMMUTABLE
@@ -35,9 +37,12 @@ contract GhostVault is ERC4626 {
     constructor(
         ERC20 _token,
         string memory _name,
-        string memory _symbol
+        string memory _symbol,
+        address _poolProvider,
+        address _usdcAddress
     ) ERC4626(_token, _name, _symbol) {
-        IPoolAddressesProvider provider = IPoolAddressesProvider(POOL_ADDRESS_PROVIDER);
+        IPoolAddressesProvider provider = IPoolAddressesProvider(_poolProvider);
+        USDC_ADDRESS = _usdcAddress;
         AAVE_LENDING_POOL_ADDRESS = provider.getPool();
         lendingPool = IPool(AAVE_LENDING_POOL_ADDRESS);
         priceOracle = IPriceOracle(PRICE_ORACLE);
@@ -53,11 +58,17 @@ contract GhostVault is ERC4626 {
      * @return shares The number of shares minted.
      */
     function deposit(uint256 assets, address receiver) public virtual override returns (uint256 shares) {
-        require((shares = previewDeposit(assets)) != 0, "ZERO_SHARES");
         asset.transferFrom(msg.sender, address(this), assets);
+        Asset storage asset;
+        asset.owner = receiver;
+        asset.amount = assets;
+        assets[receiver] = asset;
         _mint(receiver, shares);
         emit Deposit(msg.sender, receiver, assets, shares);
-        afterDeposit(assets, shares);
+         // Approve lending pool to use tokens from this smart contract
+        asset.approve(AAVE_LENDING_POOL_ADDRESS, assets);
+        // Deposit tokens to the Aave lending pool
+        lendingPool.supply(address(asset), assets, address(this), 0);
     }
 
     /**
@@ -72,73 +83,19 @@ contract GhostVault is ERC4626 {
         address receiver,
         address owner
     ) public virtual override returns (uint256 shares) {
+        Asset storage asset = assets[owner];
         shares = previewWithdraw(assets);
         if (msg.sender != owner) {
             uint256 allowed = allowance[owner][msg.sender];
             if (allowed != type(uint256).max) allowance[owner][msg.sender] = allowed - shares;
         }
-        beforeWithdraw(assets,
-        shares);
-
-        _burn(owner, shares);
-
-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
-
-        asset.transferFrom(address(this), receiver, assets);
-    }
-
-      /*//////////////////////////////////////////////////////////////
-                        INTEREST CALCULATION LOGIC
-    //////////////////////////////////////////////////////////////*/
-
-    /**
-     * @dev Update interest rate.
-     * @param newInterestRate The new interest rate.
-     */
-    function updateInterestRate(uint256 newInterestRate) external onlyOwner {
-        interestRate = newInterestRate;
-    }
-
-    /**
-     * @dev Calculate and distribute interest.
-     */
-    function distributeInterest() external onlyOwner {
-        uint256 totalAssets = totalAssets();
-        uint256 interest = (totalAssets * interestRate) / 100;
-
-        // Distribute interest to all vault holders
-        uint256 totalShares = totalSupply();
-        for (uint256 i = 0; i < totalShares; i++) {
-            address shareholder = ownerOf(i);
-            uint256 share = balanceOf(shareholder);
-            uint256 shareInterest = (share * interest) / totalShares;
-            // Mint interest as new shares to the shareholder
-            _mint(shareholder, shareInterest);
-        }
-    }
-
-    /**
-     * @dev Perform actions after depositing assets into the GhostVault.
-     * @param assets The amount of assets deposited.
-     
-     */
-    function afterDeposit(uint256 assets, uint256 shares) internal virtual override {
-        // Approve lending pool to use tokens from this smart contract
-        asset.approve(AAVE_LENDING_POOL_ADDRESS, assets);
-
-        // Deposit tokens to the Aave lending pool
-        lendingPool.supply(address(asset), assets, address(this), 0);
-    }
-
-    /**
-     * @dev Perform actions before withdrawing assets from the GhostVault.
-     * @param assets The amount of assets to withdraw.
-     */
-    function beforeWithdraw(uint256 assets, uint256 shares) internal virtual override {
-        // Withdraw tokens directly from Aave to user
         lendingPool.withdraw(address(asset), assets, msg.sender);
+        _burn(owner, shares);
+        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+        asset.transferFrom(address(this), receiver, assets);
+        asset.amount = asset.amount - assets;
     }
- 
+
     /*//////////////////////////////////////////////////////////////
                             ACCOUNTING LOGIC
     //////////////////////////////////////////////////////////////*/
@@ -199,11 +156,9 @@ contract GhostVault is ERC4626 {
         return convertToAssets(shares);
     }
 
-
     /*//////////////////////////////////////////////////////////////
                             HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
-
 
     /**
      * @dev Get the price of the asset held by the GhostVault.
@@ -213,5 +168,8 @@ contract GhostVault is ERC4626 {
         return priceOracle.getAssetPrice(USDC_ADDRESS);
     }
 
-        
+    function getAsset() public view returns (uint256) {
+        Asset memory asset = assets[msg.sender];
+        return asset.amount;
+    }        
 }
