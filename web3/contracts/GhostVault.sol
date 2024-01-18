@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.0;
 
-import {ERC4626} from "https://github.com/transmissions11/solmate/blob/main/src/mixins/ERC4626.sol";
-import {IPool} from "https://github.com/aave/aave-v3-core/blob/master/contracts/interfaces/IPool.sol";
-import {IPoolAddressesProvider} from "https://github.com/aave/aave-v3-core/blob/master/contracts/interfaces/IPoolAddressesProvider.sol";
-import {IPriceOracle} from "https://github.com/aave/aave-v3-core/blob/master/contracts/interfaces/IPriceOracle.sol";
-import {IERC4626} from "./interfaces/IERC4626.sol";
-import {ERC4626} from "https://github.com/transmissions11/solmate/blob/main/src/mixins/ERC4626.sol";
-import {ERC20} from "https://github.com/transmissions11/solmate/blob/main/src/tokens/ERC20.sol";
+import {ERC4626} from "@rari-capital/solmate/src/mixins/ERC4626.sol";
+import {IPool} from "@aave/core-v3/contracts/interfaces/IPool.sol";
+import {IPoolAddressesProvider} from "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
+import {IPriceOracle} from "@aave/core-v3/contracts/interfaces/IPriceOracle.sol";
+import "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ERC20} from "@rari-capital/solmate/src/tokens/ERC20.sol";
 
 /**
  * @title GhostVault Contract
@@ -27,11 +26,11 @@ contract GhostVault is ERC4626 {
     IPool private lendingPool;
     IPriceOracle private priceOracle;
 
+    uint256 interestRate;
 
     /*//////////////////////////////////////////////////////////////
                                IMMUTABLE
     //////////////////////////////////////////////////////////////*/
-
 
     constructor(
         ERC20 _token,
@@ -44,12 +43,9 @@ contract GhostVault is ERC4626 {
         priceOracle = IPriceOracle(PRICE_ORACLE);
     }
 
-
-
     /*//////////////////////////////////////////////////////////////
                         DEPOSIT/WITHDRAWAL LOGIC
     //////////////////////////////////////////////////////////////*/
-
     /**
      * @dev Deposit assets into the GhostVault and mint corresponding shares.
      * @param assets The amount of assets to deposit.
@@ -91,12 +87,42 @@ contract GhostVault is ERC4626 {
         asset.transferFrom(address(this), receiver, assets);
     }
 
+      /*//////////////////////////////////////////////////////////////
+                        INTEREST CALCULATION LOGIC
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @dev Update interest rate.
+     * @param newInterestRate The new interest rate.
+     */
+    function updateInterestRate(uint256 newInterestRate) external onlyOwner {
+        interestRate = newInterestRate;
+    }
+
+    /**
+     * @dev Calculate and distribute interest.
+     */
+    function distributeInterest() external onlyOwner {
+        uint256 totalAssets = totalAssets();
+        uint256 interest = (totalAssets * interestRate) / 100;
+
+        // Distribute interest to all vault holders
+        uint256 totalShares = totalSupply();
+        for (uint256 i = 0; i < totalShares; i++) {
+            address shareholder = ownerOf(i);
+            uint256 share = balanceOf(shareholder);
+            uint256 shareInterest = (share * interest) / totalShares;
+            // Mint interest as new shares to the shareholder
+            _mint(shareholder, shareInterest);
+        }
+    }
+
     /**
      * @dev Perform actions after depositing assets into the GhostVault.
      * @param assets The amount of assets deposited.
      
      */
-    function afterDeposit(uint256 assets, uint256 /shares/) internal virtual override {
+    function afterDeposit(uint256 assets, uint256 shares) internal virtual override {
         // Approve lending pool to use tokens from this smart contract
         asset.approve(AAVE_LENDING_POOL_ADDRESS, assets);
 
@@ -108,14 +134,11 @@ contract GhostVault is ERC4626 {
      * @dev Perform actions before withdrawing assets from the GhostVault.
      * @param assets The amount of assets to withdraw.
      */
-    function beforeWithdraw(uint256 assets, uint256 /shares/) internal virtual override {
+    function beforeWithdraw(uint256 assets, uint256 shares) internal virtual override {
         // Withdraw tokens directly from Aave to user
         lendingPool.withdraw(address(asset), assets, msg.sender);
     }
-
-
-
-    
+ 
     /*//////////////////////////////////////////////////////////////
                             ACCOUNTING LOGIC
     //////////////////////////////////////////////////////////////*/
@@ -187,9 +210,7 @@ contract GhostVault is ERC4626 {
      * @return The price of the asset.
      */
     function getAssetPrice( ) public view  returns (uint256) {
-
         return priceOracle.getAssetPrice(USDC_ADDRESS);
-
     }
 
         
